@@ -242,12 +242,13 @@ export async function mount(root) {
         </section>
 
         <p class="formula">
-          Столбец «мин. резерв» из Excel <strong>не используется</strong>.
+          Столбец «мин. резерв» из Excel <strong>не используется</strong> — норма из сезонных продаж.
+          В новом файле пустой столбец <strong>8 (H)</strong> заполнен «К закупке» (${data.meta.months.length} мес., ${escapeHtml(data.meta.months[0]?.label || "")} – ${escapeHtml(data.meta.months.at(-1)?.label || "")}).
           Сезонный резерв = ⌈ сумма типичных продаж за ${escapeHtml(coverLabel(cover) || "горизонт")}
           × (1 + ${s.bufferPercent}%) ⌉.
-          Типичный месяц — среднее продаж этого календарного месяца в выгрузке
-          (октябрь: среднее 2025 и 2026).
-          <strong>К закупке = max(0, сезонный резерв − остаток)</strong>.
+          Типичный месяц — среднее продаж календарного месяца за все годы в выгрузке
+          (октябрь нового файла — среднее 4 значений 2023–2026).
+          <strong>К закупке = max(0, сезонный резерв − конечный остаток)</strong>.
         </p>
 
         <section class="toolbar">
@@ -282,7 +283,7 @@ export async function mount(root) {
         </section>
 
         <section class="chart" aria-label="Расход по месяцам">
-          <h2>Сезонный профиль (колонки источника K–W)</h2>
+          <h2>Сезонный профиль (колонки источника ${escapeHtml(data.meta.months[0]?.label ? `${data.meta.months[0].label.split(' ')[0]}–${data.meta.months.at(-1)?.label.split(' ')[0]}` : "K–W")} — ${data.meta.months.length} мес.)</h2>
           <ol>
             ${series
               .map(
@@ -447,12 +448,15 @@ function detailHtml(item) {
       <div><dt>Группа</dt><dd>${escapeHtml(item.group)}</dd></div>
       <div><dt>Артикул</dt><dd>${escapeHtml(item.sku || "—")}</dd></div>
       <div><dt>Ед.</dt><dd>${escapeHtml(item.unit)}</dd></div>
-      <div><dt>Конечный остаток</dt><dd>${fmt(item.closing)}</dd></div>
+      <div><dt>Конечный остаток</dt><dd>${fmt(item.closing)}${item.opening || item.incoming ? ` (нач. ${fmt(item.opening)} + приход ${fmt(item.incoming)} − расход ${fmt(item.outgoing)})` : ""}</dd></div>
       <div><dt>Сезонный спрос</dt><dd>${fmt(item.seasonalDemand)}</dd></div>
       <div><dt>Сезонный резерв</dt><dd>${fmt(item.neededReserve)}</dd></div>
-      <div><dt>К закупке</dt><dd>${fmt(item.toPurchase)}</dd></div>
+      <div><dt>К закупке</dt><dd>${fmt(item.toPurchase)}${item.toPurchase ? " — записано в столбец H Excel" : ""}</dd></div>
       <div><dt>Статус</dt><dd>${statusLabel(status)}</dd></div>
       <div><dt>Мин. резерв Excel</dt><dd>игнорируется (${fmt(item.minReserve)})</dd></div>
+      ${item.supplier ? `<div><dt>Поставщик</dt><dd>${escapeHtml(item.supplier)}</dd></div>` : ""}
+      ${item.lastPrice ? `<div><dt>Цена поставщика</dt><dd>${fmt(item.lastPrice)}</dd></div>` : ""}
+      ${item.retailPrice ? `<div><dt>Розничная цена</dt><dd>${fmt(item.retailPrice)}</dd></div>` : ""}
     </dl>
     <p class="detail__note">
       Горизонт: ${escapeHtml(coverLabel(item.cover))} · буфер ${item.bufferPercent}%.
