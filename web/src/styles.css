@@ -106,6 +106,17 @@ h1 {
 .kpi--ok { border-color: var(--ok); }
 .kpi--muted { opacity: 0.85; }
 
+.formula {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-left: 4px solid var(--gold);
+  background: rgba(255,255,255,0.4);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+.formula strong { color: var(--ink); }
+
 .toolbar {
   display: grid;
   grid-template-columns: 2fr 1fr 1.3fr 1fr auto;
@@ -198,8 +209,9 @@ table.grid {
   position: sticky;
   bottom: 0;
 }
-.row--low { background: #f6e4dc; }
+.row--buy { background: #f6e4dc; }
 .row--zero { background: #ece7dc; color: var(--zero); }
+.num--buy { font-weight: 700; color: var(--warn); }
 .tag {
   display: inline-block;
   padding: 1px 7px;
@@ -209,7 +221,7 @@ table.grid {
   text-transform: uppercase;
 }
 .tag--ok { color: var(--ok); }
-.tag--low { color: var(--warn); background: #f3d2ca; }
+.tag--buy { color: var(--warn); background: #f3d2ca; }
 .tag--zero { color: var(--zero); }
 
 .detail {

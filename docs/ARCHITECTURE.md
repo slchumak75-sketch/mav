@@ -35,7 +35,7 @@ tools/extract_xlsx.py
 | Набор | Где | Что проверяет |
 | --- | --- | --- |
 | unittest | `tests/test_extract.py` | 111 строк, баланс, JSON = extract, нет VBA |
-| vitest | `web/src/calc.test.js` | фильтры, итоги, CSV, сортировка |
+| vitest | `web/src/calc.test.js` | фильтры, итоги, CSV, сезонный резерв / к закупке |
 
 CI падает, если JSON в git разъехался с xlsx (`--verify`).
 
@@ -62,5 +62,12 @@ CI падает, если JSON в git разъехался с xlsx (`--verify`).
 }
 ```
 
-`belowMin` = `closing < minReserve`.
+`belowMin` в JSON = `closing < minReserve` (факт источника, UI его не использует).
 `balanceOk` = `opening + incoming - outgoing == closing`.
+
+Расчётные поля (не в JSON, считает `web/src/calc.js`):
+
+- `neededReserve` = ceil(сезонный спрос горизонта × 1.10)
+- `toPurchase` = max(0, neededReserve − closing)
+
+См. `docs/SEASONAL.md`.

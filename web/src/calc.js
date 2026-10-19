@@ -1,5 +1,24 @@
 /** Pure inventory helpers. No DOM. Used by the UI and by vitest. */
 
+export const DEFAULT_AS_OF = "2026-10-19";
+export const DEFAULT_HORIZON_MONTHS = 2;
+export const DEFAULT_BUFFER_PERCENT = 10;
+
+const MONTH_NAMES_RU = {
+  1: "январь",
+  2: "февраль",
+  3: "март",
+  4: "апрель",
+  5: "май",
+  6: "июнь",
+  7: "июль",
+  8: "август",
+  9: "сентябрь",
+  10: "октябрь",
+  11: "ноябрь",
+  12: "декабрь",
+};
+
 export function round2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 }
@@ -8,12 +27,12 @@ export function expectedClosing(item) {
   return round2(item.opening + item.incoming - item.outgoing);
 }
 
-export function isBelowMin(item) {
-  return Number(item.closing) < Number(item.minReserve);
-}
-
 export function isZeroStock(item) {
   return Number(item.closing) === 0;
+}
+
+export function needsPurchase(item) {
+  return Number(item.toPurchase) > 0;
 }
 
 export function monthTotal(item) {
@@ -38,17 +57,17 @@ export function matchesQuery(item, q) {
 
 /**
  * @param {object[]} items
- * @param {{ query?: string, warehouse?: string, group?: string, stock?: 'all'|'below'|'zero'|'ok' }} filters
+ * @param {{ query?: string, warehouse?: string, group?: string, stock?: 'all'|'buy'|'zero'|'ok' }} filters
  */
 export function filterItems(items, filters = {}) {
-  const stock = filters.stock || "all";
+  const stock = filters.stock === "below" ? "buy" : filters.stock || "all";
   return items.filter((item) => {
     if (!matchesQuery(item, filters.query)) return false;
     if (filters.warehouse && item.warehouse !== filters.warehouse) return false;
     if (filters.group && item.group !== filters.group) return false;
-    if (stock === "below" && !isBelowMin(item)) return false;
+    if (stock === "buy" && !needsPurchase(item)) return false;
     if (stock === "zero" && !isZeroStock(item)) return false;
-    if (stock === "ok" && (isBelowMin(item) || isZeroStock(item))) return false;
+    if (stock === "ok" && (needsPurchase(item) || isZeroStock(item))) return false;
     return true;
   });
 }
@@ -80,7 +99,9 @@ export function totals(items) {
     incoming: 0,
     outgoing: 0,
     closing: 0,
-    belowMin: 0,
+    neededReserve: 0,
+    toPurchase: 0,
+    buyCount: 0,
     zeroStock: 0,
     monthTotal: 0,
   };
@@ -89,14 +110,18 @@ export function totals(items) {
     acc.incoming += Number(item.incoming) || 0;
     acc.outgoing += Number(item.outgoing) || 0;
     acc.closing += Number(item.closing) || 0;
+    acc.neededReserve += Number(item.neededReserve) || 0;
+    acc.toPurchase += Number(item.toPurchase) || 0;
     acc.monthTotal += monthTotal(item);
-    if (isBelowMin(item)) acc.belowMin += 1;
+    if (needsPurchase(item)) acc.buyCount += 1;
     if (isZeroStock(item)) acc.zeroStock += 1;
   }
   acc.opening = round2(acc.opening);
   acc.incoming = round2(acc.incoming);
   acc.outgoing = round2(acc.outgoing);
   acc.closing = round2(acc.closing);
+  acc.neededReserve = round2(acc.neededReserve);
+  acc.toPurchase = round2(acc.toPurchase);
   acc.monthTotal = round2(acc.monthTotal);
   return acc;
 }
@@ -107,6 +132,122 @@ export function monthlySeries(items, months) {
     label: m.label,
     value: round2(items.reduce((s, item) => s + Number(item.months?.[idx] || 0), 0)),
   }));
+}
+
+export function parseYearMonth(key) {
+  const [year, month] = String(key)
+    .split("-")
+    .map((v) => Number(v));
+  return { year, month };
+}
+
+export function monthNameRu(month, year) {
+  const name = MONTH_NAMES_RU[month] || String(month);
+  return year ? `${name} ${year}` : name;
+}
+
+/**
+ * Next `horizon` full calendar months after the as-of month.
+ * Date of report 2026-10-19 → Oct is treated as closed; horizon 2 = Nov, Dec.
+ */
+export function coverMonths(asOf = DEFAULT_AS_OF, horizon = DEFAULT_HORIZON_MONTHS) {
+  const d = new Date(`${asOf}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`Bad asOf date: ${asOf}`);
+  }
+  let year = d.getUTCFullYear();
+  let month = d.getUTCMonth() + 1;
+  const n = Math.max(0, Number(horizon) || 0);
+  const list = [];
+  for (let i = 0; i < n; i += 1) {
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+    list.push({
+      month,
+      year,
+      weight: 1,
+      label: monthNameRu(month, year),
+    });
+  }
+  return list;
+}
+
+/**
+ * Typical sales of a calendar month. October has two observations
+ * (2025 and 2026) — they are averaged. Other months have one year.
+ * Source minReserve is never used.
+ */
+export function typicalByCalendarMonth(item, monthsMeta) {
+  const buckets = new Map();
+  (monthsMeta || []).forEach((meta, idx) => {
+    const { month } = parseYearMonth(meta.key);
+    if (!month) return;
+    if (!buckets.has(month)) buckets.set(month, []);
+    buckets.get(month).push(Number(item.months?.[idx] || 0));
+  });
+  const typical = {};
+  for (let m = 1; m <= 12; m += 1) {
+    const arr = buckets.get(m) || [];
+    typical[m] = arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
+  }
+  return typical;
+}
+
+/**
+ * Seasonal stock target and purchase qty.
+ *
+ * neededReserve = ceil( sum(typical[next months]) * (1 + buffer%) )
+ * toPurchase    = max(0, neededReserve - closing)
+ *
+ * minReserve from the xlsx is ignored on purpose.
+ */
+export function seasonalPlan(item, monthsMeta, options = {}) {
+  const asOf = options.asOf || DEFAULT_AS_OF;
+  const horizonMonths = Number(options.horizonMonths ?? DEFAULT_HORIZON_MONTHS);
+  const bufferPercent = Number(options.bufferPercent ?? DEFAULT_BUFFER_PERCENT);
+  const typical = typicalByCalendarMonth(item, monthsMeta);
+  const cover = coverMonths(asOf, horizonMonths);
+  const seasonalDemand = cover.reduce(
+    (s, c) => s + (typical[c.month] || 0) * c.weight,
+    0,
+  );
+  const buffered = seasonalDemand * (1 + bufferPercent / 100);
+  const neededReserve = buffered < 1e-9 ? 0 : Math.ceil(buffered - 1e-9);
+  const closing = Number(item.closing) || 0;
+  const toPurchase = round2(Math.max(0, neededReserve - closing));
+  return {
+    typical,
+    cover: cover.map((c) => ({
+      ...c,
+      typical: round2(typical[c.month] || 0),
+    })),
+    seasonalDemand: round2(seasonalDemand),
+    bufferPercent,
+    horizonMonths,
+    asOf,
+    neededReserve,
+    toPurchase,
+    minReserveIgnored: Number(item.minReserve) || 0,
+  };
+}
+
+export function withSeasonalPlan(items, monthsMeta, options = {}) {
+  return (items || []).map((item) => {
+    const plan = seasonalPlan(item, monthsMeta, options);
+    return {
+      ...item,
+      neededReserve: plan.neededReserve,
+      toPurchase: plan.toPurchase,
+      seasonalDemand: plan.seasonalDemand,
+      cover: plan.cover,
+      bufferPercent: plan.bufferPercent,
+      horizonMonths: plan.horizonMonths,
+      asOf: plan.asOf,
+    };
+  });
 }
 
 export function toCsv(items, months) {
@@ -121,7 +262,8 @@ export function toCsv(items, months) {
     "Приход",
     "Расход",
     "Конечный остаток",
-    "Мин. резерв",
+    "Сезонный резерв",
+    "К закупке",
     ...monthHeaders,
   ];
   const lines = [headers.join(";")];
@@ -136,7 +278,8 @@ export function toCsv(items, months) {
       item.incoming,
       item.outgoing,
       item.closing,
-      item.minReserve,
+      item.neededReserve,
+      item.toPurchase,
       ...(item.months || []),
     ].map(csvCell);
     lines.push(row.join(";"));
@@ -157,4 +300,9 @@ export function fmt(n) {
     minimumFractionDigits: v % 1 === 0 ? 0 : 2,
     maximumFractionDigits: 2,
   });
+}
+
+export function coverLabel(cover) {
+  if (!cover?.length) return "—";
+  return cover.map((c) => c.label).join(", ");
 }

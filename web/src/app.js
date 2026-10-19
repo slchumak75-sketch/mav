@@ -1,33 +1,42 @@
 import {
+  coverLabel,
   filterItems,
   fmt,
-  isBelowMin,
   isZeroStock,
   monthlySeries,
+  needsPurchase,
   sortItems,
   toCsv,
   totals,
   uniqueSorted,
+  withSeasonalPlan,
 } from "./calc.js";
 
-const SETTINGS_KEY = "mav-vedomost-settings-v1";
+const SETTINGS_KEY = "mav-vedomost-settings-v2";
 
 const DEFAULT_SETTINGS = {
   query: "",
   warehouse: "",
   group: "",
   stock: "all",
-  sortKey: "name",
-  sortDir: "asc",
+  sortKey: "toPurchase",
+  sortDir: "desc",
   showMonths: true,
   dense: false,
+  horizonMonths: 2,
+  bufferPercent: 10,
 };
 
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const parsed = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (parsed.stock === "below") parsed.stock = "buy";
+    parsed.horizonMonths = Number(parsed.horizonMonths) || 2;
+    parsed.bufferPercent = Number(parsed.bufferPercent);
+    if (!Number.isFinite(parsed.bufferPercent)) parsed.bufferPercent = 10;
+    return parsed;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -38,14 +47,14 @@ function saveSettings(settings) {
 }
 
 function statusOf(item) {
+  if (needsPurchase(item)) return "buy";
   if (isZeroStock(item)) return "zero";
-  if (isBelowMin(item)) return "low";
   return "ok";
 }
 
 function statusLabel(status) {
+  if (status === "buy") return "к закупке";
   if (status === "zero") return "нет";
-  if (status === "low") return "ниже мин.";
   return "норма";
 }
 
@@ -84,8 +93,20 @@ export async function mount(root) {
     refreshedAt: new Date(),
   };
 
+  function planOptions() {
+    return {
+      asOf: data.meta.periodTo || "2026-10-19",
+      horizonMonths: state.settings.horizonMonths,
+      bufferPercent: state.settings.bufferPercent,
+    };
+  }
+
+  function plannedAll() {
+    return withSeasonalPlan(data.items, data.meta.months, planOptions());
+  }
+
   function visibleItems() {
-    const filtered = filterItems(data.items, state.settings);
+    const filtered = filterItems(plannedAll(), state.settings);
     return sortItems(filtered, state.settings.sortKey, state.settings.sortDir);
   }
 
@@ -154,6 +175,8 @@ export async function mount(root) {
     if (el.name === "stock") setSetting({ stock: el.value });
     if (el.name === "showMonths") setSetting({ showMonths: el.checked });
     if (el.name === "dense") setSetting({ dense: el.checked });
+    if (el.name === "horizonMonths") setSetting({ horizonMonths: Number(el.value) });
+    if (el.name === "bufferPercent") setSetting({ bufferPercent: Number(el.value) });
   });
 
   root.addEventListener("keydown", (ev) => {
@@ -174,15 +197,19 @@ export async function mount(root) {
           }
         : null;
 
+    const all = plannedAll();
     const items = visibleItems();
     const t = totals(items);
+    const tAll = totals(all);
     const series = monthlySeries(items, data.meta.months);
     const maxMonth = Math.max(1, ...series.map((s) => s.value));
     const warehouses = uniqueSorted(data.items, "warehouse");
     const groups = uniqueSorted(data.items, "group");
-    const selected = data.items.find((i) => i.id === state.selectedId);
+    const selected = all.find((i) => i.id === state.selectedId);
     const s = state.settings;
     const showMonths = s.showMonths;
+    const cover = items[0]?.cover || all[0]?.cover || [];
+    const colCount = (showMonths ? 10 + data.meta.months.length : 10);
 
     root.innerHTML = `
       <div class="sheet ${s.dense ? "is-dense" : ""}">
@@ -209,10 +236,19 @@ export async function mount(root) {
         <section class="kpis" aria-label="Итоги">
           ${kpi("Позиций", t.items, `${data.meta.itemCount} в источнике`)}
           ${kpi("Конечный остаток", fmt(t.closing), `начало ${fmt(t.opening)}`)}
-          ${kpi("Приход", fmt(t.incoming), `расход ${fmt(t.outgoing)}`)}
-          ${kpi("Ниже резерва", t.belowMin, t.belowMin ? "требует закупки" : "резерв закрыт", t.belowMin ? "warn" : "ok")}
+          ${kpi("Сезонный резерв", fmt(t.neededReserve), coverLabel(cover))}
+          ${kpi("К закупке", fmt(t.toPurchase), `${t.buyCount} поз. · всего ${fmt(tAll.toPurchase)}`, t.toPurchase ? "warn" : "ok")}
           ${kpi("Нулевой остаток", t.zeroStock, "нет на складе", t.zeroStock ? "muted" : "ok")}
         </section>
+
+        <p class="formula">
+          Столбец «мин. резерв» из Excel <strong>не используется</strong>.
+          Сезонный резерв = ⌈ сумма типичных продаж за ${escapeHtml(coverLabel(cover) || "горизонт")}
+          × (1 + ${s.bufferPercent}%) ⌉.
+          Типичный месяц — среднее продаж этого календарного месяца в выгрузке
+          (октябрь: среднее 2025 и 2026).
+          <strong>К закупке = max(0, сезонный резерв − остаток)</strong>.
+        </p>
 
         <section class="toolbar">
           <label class="search">
@@ -234,19 +270,19 @@ export async function mount(root) {
             </select>
           </label>
           <label>
-            <span>Остаток</span>
+            <span>Отбор</span>
             <select name="stock">
               <option value="all" ${s.stock === "all" ? "selected" : ""}>Все</option>
-              <option value="below" ${s.stock === "below" ? "selected" : ""}>Ниже минимума</option>
+              <option value="buy" ${s.stock === "buy" ? "selected" : ""}>К закупке</option>
               <option value="zero" ${s.stock === "zero" ? "selected" : ""}>Нулевые</option>
-              <option value="ok" ${s.stock === "ok" ? "selected" : ""}>В норме</option>
+              <option value="ok" ${s.stock === "ok" ? "selected" : ""}>Запас закрыт</option>
             </select>
           </label>
           <p class="shown">показано ${items.length} из ${data.items.length}</p>
         </section>
 
         <section class="chart" aria-label="Расход по месяцам">
-          <h2>Помесячное движение (колонки источника K–W)</h2>
+          <h2>Сезонный профиль (колонки источника K–W)</h2>
           <ol>
             ${series
               .map(
@@ -272,12 +308,13 @@ export async function mount(root) {
                 ${th("incoming", "Приход", s)}
                 ${th("outgoing", "Расход", s)}
                 ${th("closing", "Кон.", s)}
-                ${th("minReserve", "Мин.", s)}
+                ${th("neededReserve", "Сезон. резерв", s)}
+                ${th("toPurchase", "К закупке", s)}
                 <th>Статус</th>
                 ${
                   showMonths
                     ? data.meta.months
-                        .map((m, idx) => `<th title="${escapeHtml(m.label)}">${escapeHtml(shortMonth(m.label))}</th>`)
+                        .map((m) => `<th title="${escapeHtml(m.label)}">${escapeHtml(shortMonth(m.label))}</th>`)
                         .join("")
                     : ""
                 }
@@ -287,7 +324,7 @@ export async function mount(root) {
               ${
                 items.length
                   ? items.map((item) => rowHtml(item, data.meta.months, showMonths, state.selectedId)).join("")
-                  : `<tr><td colspan="${showMonths ? 9 + data.meta.months.length : 9}" class="empty">Ничего не найдено</td></tr>`
+                  : `<tr><td colspan="${colCount}" class="empty">Ничего не найдено</td></tr>`
               }
             </tbody>
             <tfoot>
@@ -299,7 +336,8 @@ export async function mount(root) {
                 <td>${fmt(t.incoming)}</td>
                 <td>${fmt(t.outgoing)}</td>
                 <td>${fmt(t.closing)}</td>
-                <td></td>
+                <td>${fmt(t.neededReserve)}</td>
+                <td class="num num--buy">${fmt(t.toPurchase)}</td>
                 <td></td>
                 ${showMonths ? series.map((m) => `<td>${fmt(m.value)}</td>`).join("") : ""}
               </tr>
@@ -307,11 +345,11 @@ export async function mount(root) {
           </table>
         </div>
 
-        ${selected ? detailHtml(selected, data.meta.months) : ""}
+        ${selected ? detailHtml(selected) : ""}
 
         <footer class="colophon">
           <p>Источник: ${escapeHtml(data.meta.sourceFile)} · лист ${escapeHtml(data.meta.sheet)} · SHA-256 ${escapeHtml(data.meta.sourceSha256.slice(0, 12))}…</p>
-          <p>Обновлено в интерфейсе: ${state.refreshedAt.toLocaleString("ru-RU")} · VBA: ${data.meta.hasVba ? "да" : "нет"} · формулы: ${data.meta.hasFormulas ? "да" : "нет"}</p>
+          <p>Дата расчёта: ${escapeHtml(planOptions().asOf)} · горизонт ${s.horizonMonths} мес. · буфер ${s.bufferPercent}% · мин. резерв Excel игнорируется</p>
         </footer>
       </div>
 
@@ -375,6 +413,7 @@ function th(key, label, settings) {
 
 function rowHtml(item, months, showMonths, selectedId) {
   const status = statusOf(item);
+  const buyClass = item.toPurchase > 0 ? "num--buy" : "";
   return `<tr class="row row--${status} ${item.id === selectedId ? "is-selected" : ""}" data-action="select" data-id="${item.id}">
     <td class="name">
       <strong>${escapeHtml(item.name)}</strong>
@@ -386,7 +425,8 @@ function rowHtml(item, months, showMonths, selectedId) {
     <td class="num">${fmt(item.incoming)}</td>
     <td class="num">${fmt(item.outgoing)}</td>
     <td class="num num--close">${fmt(item.closing)}</td>
-    <td class="num">${fmt(item.minReserve)}</td>
+    <td class="num">${fmt(item.neededReserve)}</td>
+    <td class="num ${buyClass}">${fmt(item.toPurchase)}</td>
     <td><span class="tag tag--${status}">${statusLabel(status)}</span></td>
     ${
       showMonths
@@ -398,7 +438,7 @@ function rowHtml(item, months, showMonths, selectedId) {
   </tr>`;
 }
 
-function detailHtml(item, months) {
+function detailHtml(item) {
   const status = statusOf(item);
   return `<aside class="detail">
     <h2>${escapeHtml(item.name)}</h2>
@@ -407,20 +447,22 @@ function detailHtml(item, months) {
       <div><dt>Группа</dt><dd>${escapeHtml(item.group)}</dd></div>
       <div><dt>Артикул</dt><dd>${escapeHtml(item.sku || "—")}</dd></div>
       <div><dt>Ед.</dt><dd>${escapeHtml(item.unit)}</dd></div>
-      <div><dt>Начальный</dt><dd>${fmt(item.opening)}</dd></div>
-      <div><dt>Приход</dt><dd>${fmt(item.incoming)}</dd></div>
-      <div><dt>Расход</dt><dd>${fmt(item.outgoing)}</dd></div>
-      <div><dt>Конечный</dt><dd>${fmt(item.closing)}</dd></div>
-      <div><dt>Мин. резерв</dt><dd>${fmt(item.minReserve)}</dd></div>
+      <div><dt>Конечный остаток</dt><dd>${fmt(item.closing)}</dd></div>
+      <div><dt>Сезонный спрос</dt><dd>${fmt(item.seasonalDemand)}</dd></div>
+      <div><dt>Сезонный резерв</dt><dd>${fmt(item.neededReserve)}</dd></div>
+      <div><dt>К закупке</dt><dd>${fmt(item.toPurchase)}</dd></div>
       <div><dt>Статус</dt><dd>${statusLabel(status)}</dd></div>
-      <div><dt>Баланс</dt><dd>${item.balanceOk ? "сходится" : "ошибка"}</dd></div>
+      <div><dt>Мин. резерв Excel</dt><dd>игнорируется (${fmt(item.minReserve)})</dd></div>
     </dl>
-    <p class="detail__note">Помесячные значения — как в исходном xlsx, сумма месяцев не обязана равняться расходу.</p>
+    <p class="detail__note">
+      Горизонт: ${escapeHtml(coverLabel(item.cover))} · буфер ${item.bufferPercent}%.
+      Помесячные значения — как в исходном xlsx.
+    </p>
     <ul class="detail__months">
-      ${months
+      ${(item.cover || [])
         .map(
-          (m, i) =>
-            `<li><span>${escapeHtml(m.label)}</span><strong>${fmt(item.months[i] || 0)}</strong></li>`,
+          (c) =>
+            `<li><span>Типичный ${escapeHtml(c.label)}</span><strong>${fmt(c.typical)}</strong></li>`,
         )
         .join("")}
     </ul>
@@ -434,6 +476,28 @@ function settingsHtml(s) {
         <h2>Настройка</h2>
         <button type="button" class="btn btn--ghost" data-action="close-settings">Закрыть</button>
       </header>
+      <label>
+        <span>Горизонт закупки</span>
+        <select name="horizonMonths">
+          ${[1, 2, 3, 4, 6]
+            .map(
+              (n) =>
+                `<option value="${n}" ${Number(s.horizonMonths) === n ? "selected" : ""}>${n} мес. вперёд</option>`,
+            )
+            .join("")}
+        </select>
+      </label>
+      <label>
+        <span>Страховой буфер к сезонному спросу</span>
+        <select name="bufferPercent">
+          ${[0, 10, 20]
+            .map(
+              (n) =>
+                `<option value="${n}" ${Number(s.bufferPercent) === n ? "selected" : ""}>${n}%</option>`,
+            )
+            .join("")}
+        </select>
+      </label>
       <label class="check">
         <input type="checkbox" name="showMonths" ${s.showMonths ? "checked" : ""} />
         Показывать помесячные колонки
@@ -442,7 +506,7 @@ function settingsHtml(s) {
         <input type="checkbox" name="dense" ${s.dense ? "checked" : ""} />
         Компактная таблица
       </label>
-      <p>Фильтры и сортировка пишутся в localStorage браузера (${SETTINGS_KEY}).</p>
+      <p>Мин. резерв из Excel не участвует в расчёте. Параметры пишутся в localStorage (${SETTINGS_KEY}).</p>
     </form>
   </div>`;
 }
