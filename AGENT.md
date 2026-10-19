@@ -77,20 +77,16 @@ docs/                       архитектура, аудит, changelog
 После **любого** коммита в ветку GitHub сам запускает workflow. Локально
 Actions не запускаются — нужен `git push origin <ветка>`.
 
-Если Pages не включён в настройках репозитория:
+Job `build` обязателен и должен быть зелёным. Job `deploy` публикует GitHub Pages
+и помечен `continue-on-error: true`: у текущего токена нет права включить Pages
+(`gh api .../pages` → 403). Сборка при этом не краснеет.
 
-```
-Settings → Pages → Source: GitHub Actions
-```
+Чтобы сайт открылся на `https://slchumak75-sketch.github.io/mav/`:
 
-или:
+1. Settings → Pages → Source: **GitHub Actions**
+2. Повторный push (или Actions → CI → Re-run)
 
-```
-gh api repos/slchumak75-sketch/mav/pages -X POST -f build_type=workflow
-```
-
-Права: `contents: read`, `pages: write`, `id-token: write`.
-Деплой Pages с не-default ветки работает, если source = GitHub Actions.
+Права workflow: `contents: read`, `pages: write`, `id-token: write`.
 
 Проверка прогона: `gh run list --branch <ветка>`.
 

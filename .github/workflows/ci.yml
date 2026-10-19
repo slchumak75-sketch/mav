@@ -11,6 +11,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 
@@ -60,6 +61,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload GitHub Pages artifact
+        if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist
@@ -68,6 +70,7 @@ jobs:
     name: Deploy GitHub Pages
     needs: build
     if: github.event_name == 'push'
+    continue-on-error: true
     runs-on: ubuntu-latest
     environment:
       name: github-pages

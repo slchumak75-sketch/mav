@@ -29,6 +29,12 @@ python3 -m unittest discover -s tests -v
 cd web && npm ci && npm test && npm run build
 ```
 
+### CI 2026-10-19
+
+Первый push: job «Test and build» зелёный, «Deploy GitHub Pages» красный
+(`Resource not accessible` / Pages не включён). Deploy переведён на
+`continue-on-error: true`, чтобы автосборка не блокировалась.
+
 ### Следующие шаги (не сделано)
 
 - UI-загрузка нового xlsx.
